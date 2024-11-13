@@ -44,9 +44,31 @@ int main() {
 					}
 				}
 			});
+		mklisp::HostObjectRef<mklisp::NativeFnObject> catObject = mklisp::NativeFnObject::alloc(
+			runtime.get(),
+			[](mklisp::Context *context) {
+				auto &curFrame = context->frameList.back();
+				std::pmr::string s;
+				for (auto &i : curFrame.curEvalList->elements) {
+					switch (i.valueType) {
+						case mklisp::ValueType::Object: {
+							mklisp::Object *object = i.exData.asObject;
 
-		mklisp::Context context;
+							switch (object->getObjectType()) {
+								case mklisp::ObjectType::String:
+									s += ((mklisp::StringObject *)object)->data;
+									break;
+							}
+						}
+					}
+				}
+
+				curFrame.returnValue = mklisp::StringObject::alloc(context->runtime, std::move(s)).get();
+			});
+
+		mklisp::Context context(runtime.get());
 		context.bindings["print"] = printObject.get();
+		context.bindings["+"] = catObject.get();
 
 		mklisp::Lexer lexer;
 		lexer.lex(std::pmr::get_default_resource(), src);

@@ -22,6 +22,9 @@ MKLISP_API bool CountablePoolResource::do_is_equal(const std::pmr::memory_resour
 	return this == &other;
 }
 
+MKLISP_API Context::Context(Runtime* runtime) : runtime(runtime), frameList(&runtime->globalHeapResource), bindings(&runtime->globalHeapResource) {
+}
+
 MKLISP_API Runtime::Runtime(std::pmr::memory_resource *upstream)
 	: globalHeapResource(upstream),
 	  createdObjects(&globalHeapResource) {
@@ -97,6 +100,7 @@ recurse:
 									goto recurse;
 								case ObjectType::NativeFn:
 									((NativeFnObject *)it->second)->callback(context);
+									evaluatedValue = frame.returnValue;
 									break;
 								default:
 									terminate();

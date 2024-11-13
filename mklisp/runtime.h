@@ -28,9 +28,14 @@ namespace mklisp {
 		Value returnValue = Value(ValueType::Nil);
 	};
 
+	class Runtime;
+
 	struct Context {
+		Runtime *runtime;
 		std::pmr::list<Frame> frameList;
 		std::pmr::unordered_map<std::pmr::string, Object *> bindings;
+
+		MKLISP_API Context(Runtime *runtime);
 	};
 
 	class Runtime {
