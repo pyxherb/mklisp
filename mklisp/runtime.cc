@@ -22,7 +22,10 @@ MKLISP_API bool CountablePoolResource::do_is_equal(const std::pmr::memory_resour
 	return this == &other;
 }
 
-MKLISP_API Context::Context(Runtime* runtime) : runtime(runtime), frameList(&runtime->globalHeapResource), bindings(&runtime->globalHeapResource) {
+MKLISP_API EvalStateExData::EvalStateExData() {
+}
+
+MKLISP_API Context::Context(Runtime *runtime) : runtime(runtime), frameList(&runtime->globalHeapResource), bindings(&runtime->globalHeapResource) {
 }
 
 MKLISP_API Runtime::Runtime(std::pmr::memory_resource *upstream)
@@ -34,103 +37,133 @@ MKLISP_API Runtime::~Runtime() {
 }
 
 MKLISP_API Value Runtime::evalList(Context *context) {
-recurse:
-	Frame &frame = context->frameList.back();
-	ListObject *curEvalListObject = frame.curEvalList;
+	while (true) {
+		Frame &curFrame = context->frameList.back();
+		switch (curFrame.evalState) {
+			case EvalState::Initial: {
+				Value callTarget = curFrame.curEvalList->elements[0];
 
-	Value evaluatedValue;
+				switch (callTarget.valueType) {
+					case ValueType::Object: {
+						Object *object = callTarget.exData.asObject;
+						switch (object->getObjectType()) {
+							case ObjectType::Symbol: {
+								SymbolObject *symbolObject = (SymbolObject *)object;
 
-	// Evaluate all elements first.
-	if (frame.curEvalIndex < curEvalListObject->elements.size()) {
-		Value &curElement = curEvalListObject->elements[frame.curEvalIndex];
-
-		switch (curElement.valueType) {
-			case ValueType::Nil:
-			case ValueType::Int:
-			case ValueType::UInt:
-			case ValueType::Long:
-			case ValueType::ULong:
-			case ValueType::Short:
-			case ValueType::UShort:
-			case ValueType::Byte:
-			case ValueType::UByte:
-			case ValueType::Char:
-				evaluatedValue = curElement;
-				++frame.curEvalIndex;
-				goto recurse;
-			case ValueType::QuotedObject:
-				evaluatedValue = curElement;
-				evaluatedValue.valueType = ValueType::Object;
-				++frame.curEvalIndex;
-				goto recurse;
-			case ValueType::Object: {
-				Object *object = curElement.exData.asObject;
-				switch (object->getObjectType()) {
-					case ObjectType::String:
-						evaluatedValue = curElement;
-						++frame.curEvalIndex;
-						goto recurse;
-					case ObjectType::Symbol:
-						evaluatedValue = curElement;
-						++frame.curEvalIndex;
-						goto recurse;
-					case ObjectType::List: {
-						context->frameList.push_back({ (ListObject *)object });
-						goto recurse;
-					}
-				}
-			}
-		}
-	}
-
-	if (curEvalListObject->elements.size()) {
-		Value firstElement = curEvalListObject->elements[0];
-
-		switch (firstElement.valueType) {
-			case ValueType::Object: {
-				Object *object = firstElement.exData.asObject;
-				switch (object->getObjectType()) {
-					case ObjectType::Symbol: {
-						SymbolObject *symbolObject = (SymbolObject *)object;
-
-						if (auto it = context->bindings.find(symbolObject->name); it != context->bindings.end()) {
-							switch (it->second->getObjectType()) {
-								case ObjectType::List:
-									context->frameList.push_back({ (ListObject *)it->second });
-									goto recurse;
-								case ObjectType::NativeFn:
-									((NativeFnObject *)it->second)->callback(context);
-									evaluatedValue = frame.returnValue;
-									break;
-								default:
-									terminate();
+								if (symbolObject->name == "if") {
+								} else {
+									// Evaluate all arguments first.
+									curFrame.evalStateExData.asEvalArgs.index = 1;
+									curFrame.evalStateExData.asEvalArgs.callTarget = context->bindings.at(symbolObject->name);
+									curFrame.evalState = EvalState::EvalArgs;
+									continue;
+								}
+								break;
 							}
-						} else {
-							terminate();
+							default:
+								terminate();
+						}
+						break;
+					}
+					default:
+						// Target is uncallable.
+						terminate();
+				}
+				break;
+			}
+			case EvalState::EvalArgs: {
+				size_t &curIndex = curFrame.evalStateExData.asEvalArgs.index;
+				if (curIndex < curFrame.curEvalList->elements.size()) {
+					Value &curElement = curFrame.curEvalList->elements[curIndex];
+
+					switch (curElement.valueType) {
+						case ValueType::Nil:
+						case ValueType::Int:
+						case ValueType::UInt:
+						case ValueType::Long:
+						case ValueType::ULong:
+						case ValueType::Short:
+						case ValueType::UShort:
+						case ValueType::Byte:
+						case ValueType::UByte:
+						case ValueType::Char:
+							curFrame.curEvalList->elements[curIndex] = curElement;
+							++curIndex;
+							continue;
+						case ValueType::QuotedObject:
+							curElement.valueType = ValueType::Object;
+							curFrame.curEvalList->elements[curIndex] = curElement;
+							++curIndex;
+							continue;
+						case ValueType::Object: {
+							Object *object = curElement.exData.asObject;
+							switch (object->getObjectType()) {
+								case ObjectType::String:
+									curFrame.curEvalList->elements[curIndex] = curElement;
+									++curIndex;
+									continue;
+								case ObjectType::Symbol:
+									curFrame.curEvalList->elements[curIndex] = curElement;
+									++curIndex;
+									continue;
+								case ObjectType::List: {
+									curFrame.evalState = EvalState::ReceivingEvaluatedArg;
+									Frame newFrame;
+									newFrame.curEvalList = (ListObject *)object;
+									newFrame.evalState = EvalState::Initial;
+									context->frameList.push_back(newFrame);
+									continue;
+								}
+							}
+						}
+					}
+				} else {
+					curFrame.evalState = EvalState::Call;
+					curFrame.evalStateExData.asCall.callTarget = curFrame.evalStateExData.asEvalArgs.callTarget;
+				}
+				break;
+			}
+			case EvalState::ReceivingEvaluatedArg: {
+				size_t &curIndex = curFrame.evalStateExData.asEvalArgs.index;
+
+				ListObject *listObject = (ListObject*)curFrame.curEvalList;
+
+				listObject->elements[curIndex] = curFrame.returnValue;
+
+				++curIndex;
+
+				curFrame.evalState = EvalState::EvalArgs;
+				break;
+			}
+			case EvalState::Call: {
+				Value callTarget = curFrame.evalStateExData.asCall.callTarget;
+				switch (callTarget.valueType) {
+					case ValueType::Object: {
+						Object *object = callTarget.exData.asObject;
+						switch (object->getObjectType()) {
+							case ObjectType::NativeFn: {
+								((NativeFnObject *)object)->callback(context);
+								break;
+							}
+							default:
+								terminate();
 						}
 						break;
 					}
 					default:
 						terminate();
 				}
-				break;
+
+				Value returnValue = curFrame.returnValue;
+				context->frameList.pop_back();
+				if (context->frameList.size()) {
+					context->frameList.back().returnValue = returnValue;
+				} else {
+					return returnValue;
+				}
 			}
-			default:
-				// Target is uncallable.
-				terminate();
 		}
 	}
-
-	context->frameList.pop_back();
-
-	if (context->frameList.size()) {
-		auto &lastFrame = context->frameList.back();
-		lastFrame.curEvalList->elements[lastFrame.curEvalIndex] = evaluatedValue;
-		++lastFrame.curEvalIndex;
-		goto recurse;
-	}
-
-	return evaluatedValue;
 }
 
 MKLISP_API Value Runtime::eval(Value value, Context *context) {
@@ -160,9 +193,11 @@ MKLISP_API Value Runtime::eval(Value value, Context *context) {
 					returnValue = value;
 					break;
 				case ObjectType::List: {
-					ListObject *listObject = (ListObject *)object;
+					Frame newFrame;
+					newFrame.curEvalList = (ListObject *)object;
+					newFrame.evalState = EvalState::Initial;
 
-					context->frameList.push_back({ listObject });
+					context->frameList.push_back(newFrame);
 					returnValue = evalList(context);
 				}
 			}

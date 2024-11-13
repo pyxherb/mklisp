@@ -22,9 +22,29 @@ namespace mklisp {
 		MKLISP_API virtual bool do_is_equal(const std::pmr::memory_resource &other) const noexcept override;
 	};
 
+	enum class EvalState {
+		Initial = 0,
+		EvalArgs,
+		ReceivingEvaluatedArg,
+		Call
+	};
+
+	union EvalStateExData {
+		struct {
+			size_t index;
+			Value callTarget;
+		} asEvalArgs;
+		struct {
+			Value callTarget;
+		} asCall;
+
+		MKLISP_API EvalStateExData();
+	};
+
 	struct Frame {
 		ListObject *curEvalList;
-		size_t curEvalIndex = 0;
+		EvalState evalState;
+		EvalStateExData evalStateExData;
 		Value returnValue = Value(ValueType::Nil);
 	};
 
